@@ -5,8 +5,26 @@ from pathlib import Path
 
 import onnx
 import onnxruntime as ort
+import numpy as np
 
 from ep_utils import OVEPManager
+from utils import bind_np_array
+
+
+ORT_TYPE_TO_NP = {
+    "tensor(float)": np.float32,
+    "tensor(double)": np.float64,
+    "tensor(float16)": np.float16,
+    "tensor(int8)": np.int8,
+    "tensor(int16)": np.int16,
+    "tensor(int32)": np.int32,
+    "tensor(int64)": np.int64,
+    "tensor(uint8)": np.uint8,
+    "tensor(uint16)": np.uint16,
+    "tensor(uint32)": np.uint32,
+    "tensor(uint64)": np.uint64,
+    "tensor(bool)": np.bool_,
+}
 
 
 def parse_args():
@@ -26,7 +44,7 @@ def parse_args():
     )
     parser.add_argument(
         "--precision",
-        default="FP32",
+        default="FP16",
         help="Precision option passed to OVEP when creating the session.",
     )
     parser.add_argument(
@@ -58,6 +76,64 @@ def create_ovep_session(model_path: str, device_type: str, precision: str):
 
     return session, ovep_manager, discovered_devices
 
+def _resolve_tensor_shape(shape):
+    resolved_shape = []
+    for dim in shape:
+        # Dynamic dimensions are represented as None/str/<=0 in ORT metadata.
+        if isinstance(dim, int) and dim > 0:
+            resolved_shape.append(dim)
+        else:
+            resolved_shape.append(1)
+    return resolved_shape
+
+
+def _build_input_data(shape, dtype):
+    element_count = int(np.prod(shape, dtype=np.int64))
+
+    if np.issubdtype(dtype, np.floating):
+        return np.linspace(0.0, 1.0, element_count, dtype=dtype).reshape(shape)
+    if np.issubdtype(dtype, np.integer):
+        return np.arange(element_count, dtype=dtype).reshape(shape)
+    if dtype == np.bool_:
+        return (np.arange(element_count) % 2 == 0).reshape(shape)
+
+    return np.zeros(shape, dtype=dtype)
+
+
+def prepare_io_specs(session: ort.InferenceSession):
+    input_specs = []
+    output_specs = []
+
+    for input_meta in session.get_inputs():
+        dtype = ORT_TYPE_TO_NP.get(input_meta.type, np.float32)
+        shape = _resolve_tensor_shape(input_meta.shape)
+        input_specs.append(
+            {
+                "name": input_meta.name,
+                "dtype": dtype,
+                "shape": shape,
+                "array": _build_input_data(shape, dtype),
+            }
+        )
+
+    for output_meta in session.get_outputs():
+        dtype = ORT_TYPE_TO_NP.get(output_meta.type, np.float32)
+        shape = _resolve_tensor_shape(output_meta.shape)
+        output_specs.append(
+            {
+                "name": output_meta.name,
+                "dtype": dtype,
+                "shape": shape,
+                "array": np.zeros(shape, dtype=dtype),
+            }
+        )
+
+    if not input_specs:
+        raise RuntimeError("Model has no inputs.")
+    if not output_specs:
+        raise RuntimeError("Model has no outputs.")
+
+    return {"inputs": input_specs, "outputs": output_specs}
 
 def dump_weights_info(model_path: str, csv_output: str = None):
     """Load ONNX model and dump weights information (shape and datatype) in CSV format.
@@ -118,6 +194,18 @@ def main():
         args.device,
         args.precision,
     )
+
+    sess0_io_binding = session.io_binding()
+    model0_io = prepare_io_specs(session)
+    for input_spec in model0_io["inputs"]:
+        bind_np_array(sess0_io_binding, input_spec["name"], input_spec["array"], is_input=True)
+    for output_spec in model0_io["outputs"]:
+        bind_np_array(sess0_io_binding, output_spec["name"], output_spec["array"], is_input=False)
+    print("Running inference with OVEP session...")
+    for i in range(500):
+        session.run_with_iobinding(sess0_io_binding)
+    print("Inference completed.")
+
 
     try:
         print("Loaded model with OVEP")
