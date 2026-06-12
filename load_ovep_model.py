@@ -6,6 +6,7 @@ from pathlib import Path
 import onnx
 import onnxruntime as ort
 import numpy as np
+from tqdm import trange
 
 from ep_utils import OVEPManager
 from utils import bind_np_array
@@ -62,6 +63,10 @@ def parse_args():
 
 
 def create_ovep_session(model_path: str, device_type: str, precision: str, compile_only: bool = False):
+    if device_type.upper() == "CPU":
+        session = ort.InferenceSession(str(model_path), providers=['CPUExecutionProvider'])
+        return session, None, []
+
     ovep_manager = OVEPManager(device_type=device_type)
     ovep_manager.register_plugin_ep()
 
@@ -76,7 +81,7 @@ def create_ovep_session(model_path: str, device_type: str, precision: str, compi
         model_parent = Path(model_path).resolve().parent
         ctx_dir = model_parent / "ep_ctx"
         ctx_dir.mkdir(parents=True, exist_ok=True)
-        ctx_name = str(ctx_dir / f"{Path(model_path).stem}.ctx")
+        ctx_name = str(ctx_dir / f"{Path(model_path).stem}_ctx.onnx")
         session_options.add_session_config_entry("ep.context_enable", "1")
         session_options.add_session_config_entry("ep.context_file_path", ctx_name)
         session_model = str(model_path)
@@ -221,7 +226,12 @@ def main():
         for output_spec in model0_io["outputs"]:
             bind_np_array(sess0_io_binding, output_spec["name"], output_spec["array"], is_input=False)
         print("Running inference with OVEP session...")
-        for i in range(500):
+        total_runs = 100
+        input("Press Enter to start inference runs...")
+        for i in trange(total_runs, desc="Inference", unit="run"):
+            if i == 20:
+                input("20 runs completed. Press Enter to continue with the remaining runs or Ctrl+C to")
+                break
             session.run_with_iobinding(sess0_io_binding)
         print("Inference completed.")
 
@@ -245,7 +255,8 @@ def main():
         #dump_weights_info(str(model_path), args.csv_output)
 
     finally:
-        ovep_manager.unregister_plugin_ep()
+        if ovep_manager is not None:
+            ovep_manager.unregister_plugin_ep()
 
 
 if __name__ == "__main__":
