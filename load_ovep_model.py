@@ -53,10 +53,15 @@ def parse_args():
         default=None,
         help="Path to save weights information as CSV file.",
     )
+    parser.add_argument(
+        "--compile-only",
+        action="store_true",
+        help="Enable OVEP context compilation mode and skip inference runs.",
+    )
     return parser.parse_args()
 
 
-def create_ovep_session(model_path: str, device_type: str, precision: str):
+def create_ovep_session(model_path: str, device_type: str, precision: str, compile_only: bool = False):
     ovep_manager = OVEPManager(device_type=device_type)
     ovep_manager.register_plugin_ep()
 
@@ -66,10 +71,20 @@ def create_ovep_session(model_path: str, device_type: str, precision: str):
         raise RuntimeError(f"No OVEP devices discovered for device_type={device_type}")
 
     session_options = ort.SessionOptions()
+    session_model = str(model_path)
+    if compile_only:
+        model_parent = Path(model_path).resolve().parent
+        ctx_dir = model_parent / "ep_ctx"
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        ctx_name = str(ctx_dir / f"{Path(model_path).stem}.ctx")
+        session_options.add_session_config_entry("ep.context_enable", "1")
+        session_options.add_session_config_entry("ep.context_file_path", ctx_name)
+        session_model = str(model_path)
+
     session_options.add_provider_for_devices(discovered_devices, {"precision": precision})
 
     try:
-        session = ort.InferenceSession(model_path, sess_options=session_options)
+        session = ort.InferenceSession(session_model, sess_options=session_options)
     except Exception:
         ovep_manager.unregister_plugin_ep()
         raise
@@ -193,18 +208,22 @@ def main():
         str(model_path),
         args.device,
         args.precision,
+        args.compile_only,
     )
 
-    sess0_io_binding = session.io_binding()
-    model0_io = prepare_io_specs(session)
-    for input_spec in model0_io["inputs"]:
-        bind_np_array(sess0_io_binding, input_spec["name"], input_spec["array"], is_input=True)
-    for output_spec in model0_io["outputs"]:
-        bind_np_array(sess0_io_binding, output_spec["name"], output_spec["array"], is_input=False)
-    print("Running inference with OVEP session...")
-    for i in range(500):
-        session.run_with_iobinding(sess0_io_binding)
-    print("Inference completed.")
+    if args.compile_only:
+        print("Compile-only mode enabled. Session created with ep.context options; skipping inference.")
+    else:
+        sess0_io_binding = session.io_binding()
+        model0_io = prepare_io_specs(session)
+        for input_spec in model0_io["inputs"]:
+            bind_np_array(sess0_io_binding, input_spec["name"], input_spec["array"], is_input=True)
+        for output_spec in model0_io["outputs"]:
+            bind_np_array(sess0_io_binding, output_spec["name"], output_spec["array"], is_input=False)
+        print("Running inference with OVEP session...")
+        for i in range(500):
+            session.run_with_iobinding(sess0_io_binding)
+        print("Inference completed.")
 
 
     try:
@@ -212,6 +231,7 @@ def main():
         print(f"  model      : {model_path}")
         print(f"  device     : {args.device}")
         print(f"  precision  : {args.precision}")
+        print(f"  compile_only: {args.compile_only}")
         print(f"  providers  : {session.get_providers()}")
         print(
             "  ep devices : "
