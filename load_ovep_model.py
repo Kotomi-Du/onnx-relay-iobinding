@@ -215,7 +215,6 @@ def main():
         args.precision,
         args.compile_only,
     )
-
     if args.compile_only:
         print("Compile-only mode enabled. Session created with ep.context options; skipping inference.")
     else:

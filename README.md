@@ -1,8 +1,9 @@
-# ONNX Relay: Two-Stage IOBinding Pipeline
+# ONNX Relay: Three-Stage IOBinding Pipeline
 
 ## Steps to run
 1. run `python run_pipeline.py`
-2. it will create two models locally and run, you will see the log `OVEP-----inputs [4 elements]: -0.25 0.25 0.75 1.25 `
+2. it will create three models locally and run. The pipeline is `model0 (CPU) -> model1 (OVEP GPU) -> model2 (CPU)`.
+3. model2 uses model1's output tensor as its input tensor through IO binding.
 
 > Tip: OVEP log is present after adding the code below before https://github.com/intel-innersource/frameworks.ai.onnxruntime.openvino-plugin-ep/blob/develop/plugin_impl/ov_compute.cc#L190
 
